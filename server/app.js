@@ -1,0 +1,101 @@
+import express from 'express';
+import {readFileSync} from 'node:fs';
+import helmet from 'helmet';
+import {randomBytes,randomUUID} from 'node:crypto';
+import {resolve,dirname} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {createStore,passwordValid,passwordHash} from './store.js';
+import '../shared/domain.js';
+import '../shared/knowledge.js';
+const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
+const token=()=>randomBytes(32).toString('hex');
+const statuses=['Novo interessado','Contato iniciado','Em acompanhamento','Inscrição informada','Encerrado'];
+const eventNames=['page_view','quiz_started','quiz_step_completed','quiz_completed','quiz_result_viewed','course_viewed','course_compared','simulator_used','lead_form_opened','lead_submitted','contact_clicked'];
+const failure=(res,status,error)=>res.status(status).json({error});
+export function createApp({dataDir=process.env.DATA_DIR||resolve(root,'.data'),origin=process.env.APP_ORIGIN||'http://localhost:3000',production=process.env.NODE_ENV==='production'}={}){
+ const store=createStore(dataDir),{db}=store,app=express();app.disable('x-powered-by');app.enable('strict routing');
+ if(production&&!origin.startsWith('https://'))throw Error('APP_ORIGIN deve usar HTTPS em produção.');
+ if(process.env.TRUST_PROXY==='true')app.set('trust proxy',1);
+ app.use(helmet({contentSecurityPolicy:{directives:{defaultSrc:["'self'"],scriptSrc:["'self'"],styleSrc:["'self'","'unsafe-inline'"],imgSrc:["'self'","data:"],connectSrc:["'self'"],fontSrc:["'self'"],objectSrc:["'none'"],frameAncestors:["'none'"],formAction:["'self'"],upgradeInsecureRequests:production?[]:null}},strictTransportSecurity:production?undefined:false}));
+ app.use('/api',(req,res,next)=>{res.set('Cache-Control','no-store');next();});
+ app.use(express.json({limit:'32kb',strict:true}));
+ function limited(group,max,windowMs=60000){return (req,res,next)=>{const bucket=store.hash(group+':'+req.ip),now=Date.now();let limit=db.prepare('SELECT * FROM limits WHERE bucket=?').get(bucket);if(!limit||limit.expires<now){db.prepare('INSERT OR REPLACE INTO limits VALUES(?,1,?)').run(bucket,now+windowMs);return next();}if(limit.hits>=max){res.set('Retry-After',String(Math.ceil((limit.expires-now)/1000)));return failure(res,429,'Muitas tentativas. Aguarde e tente novamente.');}db.prepare('UPDATE limits SET hits=hits+1 WHERE bucket=?').run(bucket);next();};}
+ app.use('/api',limited('api',300));
+ const sessionCookie=production?'__Host-atitus_session':'atitus_session';
+ function issue(res,userId=null){const raw=token(),csrf=token(),expires=Date.now()+(userId?3600000:7200000);db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').run(store.hash(raw),userId,csrf,expires);res.cookie(sessionCookie,raw,{httpOnly:true,secure:production,sameSite:'strict',path:'/',maxAge:userId?3600000:7200000});return {csrf,token:store.hash(raw)};}
+ app.use('/api',(req,res,next)=>{const raw=(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(sessionCookie+'='))?.slice(sessionCookie.length+1);req.session=raw?db.prepare('SELECT s.*,u.role,u.username FROM sessions s LEFT JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires>?').get(store.hash(raw),Date.now()):null;next();});
+ function sameOrigin(req,res,next){if(req.get('origin')&&req.get('origin')!==origin)return failure(res,403,'Origem não autorizada.');if(req.get('sec-fetch-site')==='cross-site')return failure(res,403,'Origem não autorizada.');next();}
+ app.use('/api',(req,res,next)=>{if(!['GET','HEAD'].includes(req.method))return sameOrigin(req,res,()=>{if(!req.session||req.get('X-CSRF-Token')!==req.session.csrf)return failure(res,403,'Sessão expirada. Recarregue a página.');next();});next();});
+ function authenticated(req,res,next){if(!req.session?.user_id)return failure(res,401,'Autenticação necessária.');next();}
+ function roles(...allowed){return (req,res,next)=>allowed.includes(req.session?.role)?next():failure(res,403,'Sem permissão para esta ação.');}
+ function formToken(session){const value=token();db.prepare('INSERT INTO form_tokens VALUES(?,?,?)').run(store.hash(value),session,Date.now());return value;}
+ app.get('/api/health',(req,res)=>res.json({status:'ok',mode:'demo-only'}));
+ app.get('/api/bootstrap',(req,res)=>{store.purge();const s=req.session?{csrf:req.session.csrf,token:req.session.token}:issue(res);const settings=store.settings();res.json({csrf:s.csrf,leadToken:formToken(s.token),mode:'demo-only',courses:store.courses(),retentionDays:settings.retentionDays,whatsappNumber:settings.whatsappConfirmed?settings.whatsappNumber:'',rules:settings.rules.filter(r=>r.approved)});});
+ app.get('/api/courses',(req,res)=>res.json({courses:Atitus.filterCourses(store.courses(),{search:req.query.search,area:req.query.area,campus:req.query.campus})}));
+ app.post('/api/simulate',(req,res)=>{try{res.json(Atitus.simulate(store.courses(),req.body,store.settings().rules));}catch(e){failure(res,422,e.message);}});
+ app.post('/api/leads',limited('lead',10,3600000),(req,res)=>{
+  try{const input=Atitus.validateLead(req.body,store.courses());const t=typeof req.body.token==='string'?db.prepare('SELECT * FROM form_tokens WHERE token=? AND session=?').get(store.hash(req.body.token),req.session.token):null;
+  if(!t||Date.now()-t.created<800||Date.now()-t.created>7200000)return failure(res,422,'Reabra o formulário, aguarde um instante e tente novamente.');
+  const dedupe=store.hash(input.email+'|'+input.courseId),existing=db.prepare('SELECT id FROM leads WHERE dedupe=?').get(dedupe);
+  if(existing)return res.json({id:existing.id,duplicate:true,mode:'demo'});
+  const id=randomUUID(),now=new Date().toISOString();const source=/^[a-zA-Z0-9_-]{1,32}$/.test(req.body.source||'')?req.body.source:'não coletada';
+  db.prepare('INSERT INTO leads VALUES(?,?,?,?,?,?,?,?,0)').run(id,store.encrypt(input),dedupe,input.courseId,source,statuses[0],now,now);store.audit('public-demo','lead.create',id);res.status(201).json({id,duplicate:false,mode:'demo'});
+  }catch(e){failure(res,422,e.message);}
+ });
+ app.post('/api/events',limited('events',150),(req,res)=>{const b=req.body;if(b.consent!==true||!eventNames.includes(b.event)||typeof b.sessionId!=='string'||!/^[a-zA-Z0-9-]{10,64}$/.test(b.sessionId))return failure(res,422,'Evento inválido.');
+  const utm={};for(const k of ['utm_source','utm_medium','utm_campaign'])if(typeof b.utm?.[k]==='string'&&/^[a-zA-Z0-9_-]{1,32}$/.test(b.utm[k]))utm[k]=b.utm[k];
+  const course=store.courses().some(c=>c.id===b.courseId)?b.courseId:null,step=Number.isInteger(b.step)&&b.step>=1&&b.step<=12?b.step:null;
+  const hashed=store.hash(b.sessionId);if(['page_view','quiz_started','quiz_completed','quiz_result_viewed'].includes(b.event)&&db.prepare('SELECT id FROM events WHERE session=? AND event=? AND seeded=0').get(hashed,b.event))return res.json({accepted:true,duplicate:true});
+  db.prepare('INSERT INTO events(session,event,course_id,step,utm,created,seeded) VALUES(?,?,?,?,?,?,0)').run(hashed,b.event,course,step,JSON.stringify(utm),new Date().toISOString());res.status(201).json({accepted:true});
+ });
+ app.post('/api/events/forget',(req,res)=>{if(typeof req.body.sessionId!=='string')return failure(res,422,'Sessão inválida.');db.prepare('DELETE FROM events WHERE session=? AND seeded=0').run(store.hash(req.body.sessionId));res.json({deleted:true});});
+ app.post('/api/admin/login',limited('login',5,900000),(req,res)=>{const {username,password}=req.body||{};if(typeof username!=='string'||typeof password!=='string'||password.length>200)return failure(res,401,'Usuário ou senha inválidos.');const u=db.prepare('SELECT * FROM users WHERE username=?').get(username);const dummy='00'.repeat(16)+':'+'00'.repeat(64);const valid=passwordValid(password,u?.password||dummy);if(!u||!valid){store.audit('anonymous','auth.failure','login');return failure(res,401,'Usuário ou senha inválidos.');}db.prepare('DELETE FROM sessions WHERE token=?').run(req.session.token);const session=issue(res,u.id);store.audit(u.id,'auth.login','session');res.json({csrf:session.csrf,role:u.role,username:u.username});});
+ app.use('/api/admin',authenticated);
+ app.get('/api/admin/me',(req,res)=>res.json({username:req.session.username,role:req.session.role,csrf:req.session.csrf}));
+ app.post('/api/admin/logout',(req,res)=>{db.prepare('DELETE FROM sessions WHERE token=?').run(req.session.token);res.clearCookie(sessionCookie,{path:'/',httpOnly:true,secure:production,sameSite:'strict'});res.json({ok:true});});
+ function range(req){const start=/^\d{4}-\d{2}-\d{2}$/.test(req.query.start||'')?req.query.start:'2000-01-01';const end=/^\d{4}-\d{2}-\d{2}$/.test(req.query.end||'')?req.query.end:'2100-01-01';return {start:start+'T00:00:00.000Z',end:end+'T23:59:59.999Z',seeded:req.query.dataset==='seeded'?1:0};}
+ app.get('/api/admin/metrics',(req,res)=>{const {start,end,seeded}=range(req);const events=db.prepare('SELECT * FROM events WHERE seeded=? AND created BETWEEN ? AND ?').all(seeded,start,end);const leads=db.prepare('SELECT course_id,source FROM leads WHERE seeded=? AND created BETWEEN ? AND ?').all(seeded,start,end);
+  const count=name=>new Set(events.filter(e=>e.event===name).map(e=>e.session)).size;const views=count('page_view'),started=count('quiz_started'),completed=count('quiz_completed'),contacts=count('contact_clicked');const group=(list,key)=>Object.entries(list.reduce((acc,x)=>(acc[x[key]]=(acc[x[key]]||0)+1,acc),{})).map(([label,value])=>({label,value})).sort((a,b)=>b.value-a.value);
+  const abandoned=Array.from({length:12},(_,i)=>{const sessions=new Set(events.filter(e=>e.event==='quiz_started').map(e=>e.session));const eligible=i===0?sessions:new Set(events.filter(e=>e.event==='quiz_step_completed'&&e.step===i).map(e=>e.session));const done=new Set(events.filter(e=>e.event==='quiz_step_completed'&&e.step===i+1).map(e=>e.session));return {step:i+1,value:[...eligible].filter(s=>!done.has(s)).length};});
+  const campaigns=group(events.filter(e=>e.event==='page_view').map(e=>({source:JSON.parse(e.utm).utm_source||'direto'})),'source');
+  res.json({dataset:seeded?'Dados fictícios de apresentação':'Eventos coletados com permissão · demonstração',visitors:views,started,completed,completionRate:started?Math.round(completed/started*100):0,contacts,leads:leads.length,courses:group(events.filter(e=>e.event==='course_viewed'&&e.course_id),'course_id'),leadsByCourse:group(leads,'course_id'),campaigns,abandoned,funnel:[{label:'Sessões visitantes',value:views},{label:'Inícios do quiz',value:started},{label:'Conclusões do quiz',value:completed},{label:'Sessões com contato',value:contacts},{label:'Registros fictícios',value:leads.length}],note:'Visitantes = sessões com page_view autorizado, não pessoas únicas. Funil agregado não comprova causalidade. Abandono é provisório no período; nenhuma matrícula é inferida.'});
+ });
+ function leadList(req){const {start,end,seeded}=range(req);const search=String(req.query.search||'').slice(0,100).toLowerCase(),status=String(req.query.status||''),course=String(req.query.course||'');return db.prepare('SELECT * FROM leads WHERE seeded=? AND created BETWEEN ? AND ? ORDER BY created DESC LIMIT 1000').all(seeded,start,end).map(r=>({...store.decrypt(r.identity),id:r.id,source:r.source,status:r.status,created:r.created,seeded:!!r.seeded})).filter(r=>(!search||r.name.toLowerCase().includes(search)||r.email.toLowerCase().includes(search))&&(!status||r.status===status)&&(!course||r.courseId===course));}
+ app.get('/api/admin/leads',(req,res)=>res.json({leads:leadList(req),statuses,limit:1000}));
+ app.patch('/api/admin/leads/:id',roles('admin','advisor'),(req,res)=>{if(!statuses.includes(req.body.status))return failure(res,422,'Status inválido.');const changes=db.prepare('UPDATE leads SET status=?,updated=? WHERE id=?').run(req.body.status,new Date().toISOString(),req.params.id);if(!changes.changes)return failure(res,404,'Registro não encontrado.');store.audit(req.session.user_id,'lead.status',req.params.id);res.json({ok:true});});
+ app.delete('/api/admin/leads/:id',roles('admin'),(req,res)=>{const changes=db.prepare('DELETE FROM leads WHERE id=?').run(req.params.id);if(!changes.changes)return failure(res,404,'Registro não encontrado.');store.audit(req.session.user_id,'lead.delete',req.params.id);res.json({ok:true});});
+ app.get('/api/admin/export',roles('admin','advisor'),(req,res)=>{if(req.query.authorized!=='true')return failure(res,422,'Confirme a autorização para exportação.');const rows=leadList(req);const csv=v=>'"'+String(v??'').replace(/^[=+@-]/,"'$&").replace(/"/g,'""')+'"';const content=[['Nome fictício','Curso','Origem','Data','Status','E-mail fictício'],...rows.map(r=>[r.name,r.courseId,r.source,r.created,r.status,r.email])].map(r=>r.map(csv).join(';')).join('\r\n');store.audit(req.session.user_id,'lead.export',rows.length);res.set({'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="interessados-demo.csv"'}).send('\uFEFF'+content);});
+ app.get('/api/admin/catalog',(req,res)=>res.json({courses:store.courses()}));
+ app.put('/api/admin/catalog/:id',roles('admin','editor'),(req,res)=>{
+  try{const existing=store.courses().find(c=>c.id===req.params.id);if(!existing)return failure(res,404,'Curso não encontrado.');const body=req.body,allowed=['name','area','officialName','modality','campus','shift','duration','description','contents','careers','differentials','officialUrl','availability','updatedAt','source'];const data={...existing};for(const k of allowed)if(k in body){if(['contents','differentials'].includes(k)){if(!Array.isArray(body[k])||body[k].length>20||body[k].some(v=>typeof v!=='string'||v.length>200))throw Error('Lista inválida.');data[k]=body[k];}else{if(body[k]!==null&&(typeof body[k]!=='string'||body[k].length>1500))throw Error('Campo inválido.');data[k]=body[k]||null;}}
+  if(!AtitusCatalog.areas.some(a=>a.id===data.area))throw Error('Área inválida.');
+  if(!data.name||!data.description||!data.contents?.length||!['pending','verified','unavailable'].includes(data.availability))throw Error('Preencha nome, descrição, conteúdos e disponibilidade.');
+  const isOfficial=url=>{try{const u=new URL(url);return u.protocol==='https:'&&(u.hostname==='atitus.edu.br'||u.hostname.endsWith('.atitus.edu.br'))&&!u.username&&!u.password;}catch{return false;}};
+  if(data.officialUrl&&!isOfficial(data.officialUrl))throw Error('Página deve ser HTTPS no domínio institucional Atitus.');
+  if(data.availability==='verified'&&(!data.officialName||!data.source||!isOfficial(data.source)||!/^\d{4}-\d{2}-\d{2}$/.test(data.updatedAt||'')))throw Error('Oferta verificada exige nome oficial, fonte institucional e data.');
+  db.prepare('UPDATE courses SET data=? WHERE id=?').run(JSON.stringify(data),existing.id);store.audit(req.session.user_id,'catalog.update',existing.id);res.json({course:data});
+  }catch(e){failure(res,422,e.message);}
+ });
+ app.get('/api/admin/settings',roles('admin'),(req,res)=>res.json(store.settings()));
+ app.put('/api/admin/settings',roles('admin'),(req,res)=>{
+  const b=req.body;if(!Number.isInteger(b.retentionDays)||b.retentionDays<1||b.retentionDays>365||!Array.isArray(b.rules)||b.rules.length>100)return failure(res,422,'Retenção ou regras inválidas.');
+  if(b.whatsappConfirmed===true&&!/^\d{10,15}$/.test(b.whatsappNumber||''))return failure(res,422,'Informe número confirmado válido.');
+  const allowedTypes=['scholarship','discount','financing','credit'];for(const r of b.rules){if(!r.id||typeof r.id!=='string'||!store.courses().some(c=>c.id===r.courseId)||!allowedTypes.includes(r.type)||typeof r.approved!=='boolean'||!Number.isFinite(r.base)||r.base<=0||!Number.isFinite(r.percent)||r.percent<0||r.percent>100||!/^\d{4}-\d{2}-\d{2}$/.test(r.validFrom)||!/^\d{4}-\d{2}-\d{2}$/.test(r.validTo)||r.validFrom>r.validTo||!r.source?.startsWith('https://atitus.edu.br/')||!r.campaign||!r.conditions||!r.campus||!r.modality||!Array.isArray(r.entries)||!r.entries.length||r.entries.some(x=>!['enem','vestibular','transferencia','diploma'].includes(x))||!/^\d{4}-\d{2}-\d{2}$/.test(r.updatedAt||'')||(r.minScore!=null&&(!Number.isFinite(r.minScore)||r.minScore<0||r.minScore>1000)))return failure(res,422,'Regra exige preço, vigência, fonte institucional, campanha, critérios e condições válidas.');}
+  const settings={retentionDays:b.retentionDays,whatsappNumber:String(b.whatsappNumber||''),whatsappConfirmed:b.whatsappConfirmed===true,rules:b.rules};db.prepare('UPDATE settings SET data=? WHERE id=1').run(JSON.stringify(settings));store.audit(req.session.user_id,'settings.update','settings');res.json({ok:true});
+ });
+ app.post('/api/admin/retention',roles('admin'),(req,res)=>{const deleted=store.purge();store.audit(req.session.user_id,'retention.run',deleted);res.json({deleted});});
+ app.get('/api/admin/audit',roles('admin'),(req,res)=>res.json({entries:db.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 200').all()}));
+ app.post('/api/admin/demo/seed',roles('admin'),(req,res)=>{db.exec('BEGIN');try{db.prepare('DELETE FROM leads WHERE seeded=1').run();db.prepare('DELETE FROM events WHERE seeded=1').run();const courses=store.courses();for(let i=0;i<24;i++){const c=courses[i%courses.length],session='seeded-'+i,created=new Date(Date.now()-i*3600000).toISOString();const events=['page_view',...(i<20?['quiz_started']:[]),...(i<15?['quiz_completed','quiz_result_viewed','course_viewed']:[]),...(i<10?['simulator_used','contact_clicked']:[])];for(const event of events)db.prepare('INSERT INTO events(session,event,course_id,step,utm,created,seeded) VALUES(?,?,?,?,?,?,1)').run(session,event,c.id,null,JSON.stringify({utm_source:i%2?'apresentacao':'campanha-ficticia'}),created);for(let step=1;step<=(i<15?12:i<20?5:0);step++)db.prepare('INSERT INTO events(session,event,step,utm,created,seeded) VALUES(?,?,?,?,?,1)').run(session,'quiz_step_completed',step,'{}',created);if(i<8){const data={name:'Estudante Demo '+i,email:'demo'+i+'@example.test',phone:'',courseId:c.id,campus:'pending',fictional:true,consentVersion:'demo-seed',marketing:false};db.prepare('INSERT INTO leads VALUES(?,?,?,?,?,?,?,?,1)').run(randomUUID(),store.encrypt(data),'seeded:'+i,c.id,'apresentação fictícia',statuses[i%statuses.length],created,created);}}
+  store.audit(req.session.user_id,'demo.seed','fictional');db.exec('COMMIT');res.json({ok:true,fictional:true});}catch(e){db.exec('ROLLBACK');throw e;}});
+ app.post('/api/admin/demo/reset',roles('admin'),(req,res)=>{db.prepare('DELETE FROM leads WHERE seeded=1').run();db.prepare('DELETE FROM events WHERE seeded=1').run();store.audit(req.session.user_id,'demo.reset','seeded-only');res.json({ok:true});});
+ app.post('/api/assistant',limited('assistant',30),(req,res)=>{const q=typeof req.body.query==='string'?req.body.query.toLowerCase().slice(0,160):'';const found=AtitusKnowledge.find(k=>k.keys.some(x=>q.includes(x)));res.json({mode:'verified-local-faq',answer:found?.answer||'Informação não disponível na base autorizada. Consulte os canais oficiais da instituição.',source:found?.source||null});});
+ // Integrações CRM/IA são adaptadores desativados, nunca chamados implicitamente.
+ app.use('/api',(req,res)=>failure(res,404,'Rota não encontrada.'));
+ app.get('/',(req,res)=>res.type('html').send(readFileSync(resolve(root,'index.html'),'utf8').replace('data-runtime="static"','data-runtime="server"')));app.get('/admin',(req,res)=>res.redirect(308,'/admin/'));app.get('/admin/',(req,res)=>res.sendFile(resolve(root,'admin/index.html')));
+ for(const file of ['style.css','script.js'])app.get('/'+file,(req,res)=>res.sendFile(resolve(root,file)));
+ app.use('/shared',express.static(resolve(root,'shared'),{dotfiles:'deny',index:false}));app.use('/admin',express.static(resolve(root,'admin'),{dotfiles:'deny',index:false}));
+ app.use((req,res)=>res.status(404).send('Página não encontrada.'));
+ app.use((err,req,res,next)=>{if(err.type==='entity.too.large')return failure(res,413,'Requisição muito grande.');if(err instanceof SyntaxError)return failure(res,400,'JSON inválido.');failure(res,500,'Não foi possível concluir. Tente novamente.');});
+ store.purge();const timer=setInterval(()=>store.purge(),3600000);timer.unref();return {app,store,close(){clearInterval(timer);store.close();}};
+}
+export {statuses,passwordHash};

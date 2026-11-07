@@ -27,8 +27,10 @@ jobs:
         uses: actions/configure-pages@v5
       - name: Preparar somente os arquivos publicos
         run: |
-          mkdir -p _site
+          mkdir -p _site/shared _site/admin
           cp index.html style.css script.js _site/
+          cp shared/*.js _site/shared/
+          cp admin/index.html admin/admin.css admin/admin.js _site/admin/
           touch _site/.nojekyll
       - name: Enviar site estatico
         uses: actions/upload-pages-artifact@v3

@@ -1,81 +1,77 @@
-# Atitus · Seu próximo capítulo
+# Atitus Experience 2.0
 
-Landing page estática de demonstração independente, em português, com HTML5, Tailwind via CDN, CSS e JavaScript puro. Não exige Node.js, instalação, banco de dados ou backend.
+Website de orientação exploratória e captação em **demonstração independente**, sem vínculo ou aprovação oficial da Atitus. Preserva o site anterior, a paleta roxa e quente, ilustração SVG, navegação e componentes. A cópia integral original está em `backups/atitus-site.original.html` (SHA256 `85625918357b2de4cff4f212910cb980e7c26d221a8daf421db35a03658f5813`).
 
-## Abrir e demonstrar
+## Executar no Windows / VS Code
 
-Abra `index.html` no navegador, mantendo `style.css` e `script.js` na mesma pasta. O CSS próprio mantém o layout mesmo sem CDN ou fontes externas; fontes de sistema são o fallback. Internet é necessária para o Tailwind CDN e canais externos.
+Instale **Node.js 24 LTS**, abra a pasta no VS Code e use o terminal:
 
-Opcionalmente, use um servidor estático, útil para testar a área de transferência:
-
-```sh
-cd /workspace/quiz-atitus
-python3 -m http.server 8000 --bind 0.0.0.0
+```powershell
+npm ci
+Copy-Item .env.example .env
+npm run admin:create
+npm start
 ```
 
-Abra a porta 8000 no seu navegador pelo mecanismo de acesso da sua hospedagem/ambiente. Para uso local, abra `http://localhost:8000`. O servidor Python é apenas uma ferramenta de desenvolvimento.
+O comando de criação solicita usuário e senha de pelo menos 14 caracteres, sem exibir a senha. Não existem credenciais padrão. Não coloque credenciais no HTML, no Git ou em capturas de apresentação.
 
-## Funcionalidades
+Abra **http://localhost:3000** e **http://localhost:3000/admin/**. Mantenha o terminal aberto. `npm run dev` reinicia o servidor ao editar código. No Linux/macOS, substitua `Copy-Item` por `cp`. Não é necessário SQLite instalado à parte: usamos `node:sqlite` do Node 24, evitando compilação de módulos nativos no Windows.
 
-- Quiz de quatro perguntas, respostas editáveis, voltar e refazer.
-- Cada alternativa soma um ponto à área de mesmo índice. Ordenação por pontuação; empate resolvido pela primeira preferência entre as empatadas, com explicação visível. Sem resultados aleatórios.
-- Resultado com explicação, carreiras e alternativas; seleciona um curso no simulador.
-- Comparação entre dois cursos, com foco, possibilidades profissionais e valores-base fictícios. Catálogo demonstrativo pendente de confirmação.
-- Simulador com curso, ingresso, nota opcional e desconto de 0–50% exclusivamente ilustrativo. Nota ENEM 0–1000; vestibular 0–100, sem relação com a concessão de desconto. Outras formas de ingresso não solicitam nota.
-- Resumo personalizado, cópia e WhatsApp quando houver um número oficial configurado.
-- Menu mobile, FAQ, avisos de privacidade, teclado, foco visível, movimento reduzido e modais com Escape.
-- Nenhum dado persistido e nenhuma integração de analytics ativa.
+Sem arquivo `.env`, o servidor usa o mesmo padrão local. Caso altere a porta, ajuste também `APP_ORIGIN`. O valor deve coincidir exatamente com o endereço aberto no navegador (incluindo protocolo e porta). Não use `127.0.0.1` no navegador com `APP_ORIGIN=http://localhost:3000`.
 
-## Configurar dados
+## Abrir somente o site, sem servidor
 
-Edite `CONFIG` no início de `script.js`:
+Abra `index.html` com as pastas/arquivos juntos ou execute `npm run export:html` para gerar `artifacts/atitus-experience-2.html`, um HTML independente com todos os estilos e scripts públicos incorporados. Quiz, catálogo demonstrativo, comparação, simulador, FAQ e experiências funcionam sem API e sem serviços pagos. **Formulários não persistem nem fingem sucesso no modo estático; administração exige backend.**
 
-- `whatsappNumber`: vazio por padrão. Preencha somente com número oficial confirmado, DDI + DDD + telefone, apenas dígitos. Não há número fictício publicado. O link usa `https://wa.me/` e `encodeURIComponent()`. Até configurar, o CTA abre o resumo com opção de copiar e link ao site oficial.
-- `courses`: nomes, área e `base` (valor mensal fictício, em reais). Todos os valores atuais são de demonstração.
-- `officialUrl`: referência do site oficial. Links institucionais também estão no HTML.
-- `catalogVerified`: marcador de revisão; não remove avisos automaticamente. Altere os textos da página somente após validação documental.
-- Paleta, tipografia e dimensões: variáveis e regras em `style.css`.
+O botão WhatsApp continua desativado até configuração institucional confirmada. O resumo pode ser copiado. Se configurado, resultado é opcional e a abertura exige aprovação do texto; nenhuma nota é incluída. Texto livre não deve conter dados pessoais.
 
-## Validação institucional pendente
+## O que funciona
 
-A tentativa de consulta a `https://atitus.edu.br` e `https://www.atitus.edu.br` em 07/11/2026 recebeu bloqueio HTTP 403 do proxy do ambiente, antes de chegar ao site. Não houve verificação de cursos, logotipo, cores, campanhas, preços, regras ou telefone. A paleta e a marca tipográfica são uma proposta visual, não uma reprodução validada da identidade oficial. Não foram usadas imagens externas nem logotipo oficial.
+- Quiz de 12 perguntas com pesos por interesse e perfis multidimensionais; até 3 cursos, justificativas, índices exploratórios e empates explícitos. Não é avaliação psicológica.
+- Busca sem acentos, filtros de área/campus, comparação de 2 ou 3 cursos e catálogo com campos de procedência/atualização. Dados não confirmados ficam pendentes, sem campus ou duração inventados.
+- Simulador fictício em tempo real e cálculo autorizado no servidor quando houver regras cadastradas, aprovadas e vigentes. Bolsas/descontos são distintos de crédito/financiamento. Nenhuma regra institucional vem ativada. O telefone/flag do .env só inicializam um banco novo; depois use Configurações no painel.
+- Formulário opcional que aceita **somente** nomes `Estudante Demo 01`, e-mails reservados `@example.test`/`@example.com` e telefone vazio ou `DEMO`. Não recebe leads reais. Persistência SQLite, criptografia de identidade, deduplicação por e-mail+curso e retenção configurável.
+- Administração autenticada, métricas agregadas, filtros de período, gestão de status, exclusão, exportação autorizada, edição de catálogo, regras financeiras e auditoria.
+- Dados de apresentação separados: 24 sessões fictícias e 8 interessados. Ativar é idempotente; limpar não apaga registros do formulário.
+- FAQ interativo, fallback sem IA, duas experiências (lógica e gestão) e contratos de extensão CRM/IA desativados.
+- Métricas opcionais opt-in, revogação e exclusão dos eventos da sessão atual. Sem terceiros de analytics, nomes, notas, respostas ou contatos em eventos.
 
-Os nomes Direito, Administração, Agronomia, Psicologia, Odontologia, Ciência da Computação e Engenharia Civil compõem apenas o catálogo ilustrativo desta entrega, sem afirmação de oferta vigente pela Atitus. Antes da apresentação como material aprovado/publicação institucional:
+## Organização
 
-1. Consultar o catálogo oficial e confirmar curso, campus, modalidade e disponibilidade, registrando os URLs e a data.
-2. Substituir a marca tipográfica pela identidade autorizada e validar cores/fontes.
-3. Confirmar o WhatsApp e as condições comerciais. Não converter o slider em promessa de bolsa. O limite de 50% não representa campanha oficial.
-4. Revisar textos legais e privacidade com a instituição. Esta página permanece identificada como proposta independente.
+- `index.html`, `style.css`, `script.js`: site existente, aprimorado.
+- `shared/catalog.js`: catálogo de fallback demonstrativo e perfis.
+- `shared/domain.js`: regras do quiz, filtros, comparação, simulação e validação.
+- `shared/knowledge.js`: FAQ com fontes sobre o funcionamento local e limites.
+- `server/`: Express, SQLite, sessões, APIs e contratos de integrações.
+- `admin/`: dashboard independente, sem credenciais embutidas.
+- `scripts/`: inicialização administrativa e exportação HTML.
+- `tests/`: regras, APIs, segurança e jornada automatizada no navegador.
+- `.data/`: dados locais e chave, gerados e **ignorados pelo Git**.
 
-## Eventos para analytics
+## Testes
 
-```js
-window.addEventListener('atitus:conversion', ({ detail }) => {
-  // Enviar para a ferramenta escolhida somente após revisão de privacidade.
-  console.log(detail.event);
-});
+```powershell
+npm test
+npx playwright install chromium
+npm run test:browser
 ```
 
-Eventos: `quiz_start`, `quiz_step_complete`, `quiz_result`, `quiz_restart`, `simulation_change` (com debounce), `contact_summary_open` e `whatsapp_click`. O último só ocorre no link efetivo ao WhatsApp. Não incluem nota nem respostas individuais. Os eventos não são contagens únicas por visitante e não são armazenados.
+Para Chromium já instalado no Linux: `CHROMIUM_PATH=/usr/bin/chromium npm run test:browser`. O teste de navegador usa a porta 4177 e um banco temporário isolado; não cria credenciais no banco de apresentação. Capturas ficam em `artifacts/`. Testes de API usam senhas aleatórias temporárias e removem os dados ao terminar.
 
-## Publicar em hospedagem comum
+Consulte [docs/VALIDACAO.md](docs/VALIDACAO.md) para resultados executados e limites. Verificações automáticas de acessibilidade não substituem teste manual com leitor de tela.
 
-Envie `index.html`, `style.css` e `script.js` à pasta pública da hospedagem (por exemplo, `public_html`), sem alterar os nomes relativos. Não há build. Funciona em hospedagem estática, GitHub Pages, Netlify, Vercel ou servidor convencional. Ative HTTPS. Para GitHub Pages, publique o conteúdo na raiz do branch escolhido e configure Pages para esse branch. Nenhuma publicação foi realizada nesta entrega.
+## Configuração e publicação
 
-O Tailwind browser CDN atende à exigência desta demonstração; para publicação com maior controle de desempenho e política de conteúdo, considere gerar e hospedar o CSS estático em uma etapa separada. O site já tem CSS próprio como fallback.
+`DATA_DIR` guarda SQLite e a chave AES-256-GCM. Preserve ambos em backups protegidos; perder a chave impede recuperar os registros. Não exponha essa pasta por HTTP ou Git. Retenção padrão 30 dias (variável RETENTION_DAYS usada apenas na criação do banco), ajustável depois em `/admin`; limpeza no início, a cada hora e manualmente. Os cookies HttpOnly são essenciais para CSRF e autenticação. Sessões administrativas duram até 1 hora; não há compartilhamento de senhas.
 
-## Testes executados
+Catálogo editado no painel fica no SQLite. O fallback do HTML estático é o catálogo demonstrativo versionado. Alterações do painel não sincronizam automaticamente com GitHub Pages nem com o HTML exportado.
 
-Chromium/Playwright, sem dependência de teste adicionada ao site:
+**GitHub Pages não executa Node, SQLite ou autenticação.** O workflow existente publica somente o site público estático. Para API e painel, hospede em um serviço com Node 24, HTTPS e disco persistente. Veja [docs/ARQUITETURA.md](docs/ARQUITETURA.md) e [docs/PRIVACIDADE-SEGURANCA.md](docs/PRIVACIDADE-SEGURANCA.md) para operação, backups, migração e revisão antes de produção. Nenhum serviço de backend foi implantado externamente nesta entrega.
 
-- Quatro resultados homogêneos, todos os 16 botões de resposta, voltar preservando seleção e empate explicado.
-- Todas as 256 combinações verificadas quanto à maior pontuação e resultado determinístico.
-- Progresso 25/50/75/100%, resposta obrigatória e refazer.
-- R$ 2.000 com 40% = R$ 1.200; economia R$ 800; limites 0 e 50%.
-- Validação de notas, troca de ingresso, resumo e codificação de URL WhatsApp com número de teste injetado apenas no navegador e removido, sem envio externo.
-- Comparação, FAQ, privacidade e menu mobile.
-- Sem overflow horizontal em 320, 375, 390, 768, 1024 e 1440 px. Sem exceções JavaScript nos fluxos testados.
+## Informações institucionais pendentes
 
-Contato real e dados oficiais não foram validados. Recursos externos podem ser bloqueados pela rede; o fluxo central foi validado com os recursos externos bloqueados via HTTP. A abertura file:// foi impedida pela política administrativa do Chromium gerenciado; não foi validada nesse navegador.
+A consulta HTTPS a `atitus.edu.br` permaneceu bloqueada pelo proxy do ambiente (403), em 07/11/2026. Não houve confirmação de identidade, catálogo, oferta, campus, modalidade, duração, telefone, campanhas ou preços. Os sete nomes de cursos são herdados da demonstração original, e não afirmações de oferta vigente. Não há logotipo oficial: a marca tipográfica é **Experience · proposta para Atitus**. Links gerais levam ao site institucional; links específicos só são exibidos após cadastro de fonte validada. Conteúdos e carreiras são referências gerais, não a grade oficial.
 
-Verificação adicional: axe-core (regras WCAG 2 A/AA e 2.1 AA) executado em mobile, desktop, resultado e modal de contato. Problemas de contraste encontrados foram corrigidos. Isso não substitui auditoria manual completa com tecnologias assistivas.
+Uma adoção real exige validação institucional e jurídica, definição de controlador e operadores, canais de direitos, critérios comerciais autorizados, aviso de privacidade final e hospedagem adequada. Não afirmamos conformidade certificada com LGPD, resultados de conversão ou integração a sistemas privados.
+
+Apresentação: [DEMO-COORDENADOR.md](DEMO-COORDENADOR.md). Proposta: [PROPOSTA-COMERCIAL.md](PROPOSTA-COMERCIAL.md).
